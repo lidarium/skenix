@@ -8,11 +8,11 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-    "name": "Modeling Tools",
+    "name": "Skenix",
     "author": "Lidarium",
     "version": (6, 7, 0),
     "blender": (2, 91, 0),
-    "location": "View3D > Sidebar (N) > Modeling Tools | Shortcut: Shift + Space",
+    "location": "View3D > Sidebar (N) > Skenix | Shortcut: Shift + Space",
     "description": "Smart Push/Pull (Scalar-Math Native Extrude + CSG Toggles)",
     "category": "Mesh",
 }
@@ -285,7 +285,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 # ---------------------------------------------------------------------------
 
 class VIEW3D_MT_modeling_floating_pie(bpy.types.Menu):
-    bl_label = "Modeling Tools"
+    bl_label = "Skenix"
     bl_idname = "VIEW3D_MT_modeling_floating_pie"
 
     def draw(self, context):
@@ -306,15 +306,15 @@ class VIEW3D_MT_modeling_floating_pie(bpy.types.Menu):
         pie.operator("mesh.normals_make_consistent", text="Fix Normals", icon='NORMALS_FACE').inside = False
 
 # ---------------------------------------------------------------------------
-# UI: Sidebar N-Panel ("Modeling Tools" Tab)
+# UI: Sidebar N-Panel ("Skenix" Tab)
 # ---------------------------------------------------------------------------
 
 class VIEW3D_PT_modeling_panel(bpy.types.Panel):
-    bl_label = "Modeling Tools"
+    bl_label = "Skenix"
     bl_idname = "VIEW3D_PT_modeling_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Modeling Tools"
+    bl_category = "Skenix"
 
     def draw(self, context):
         layout = self.layout
