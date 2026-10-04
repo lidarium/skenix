@@ -172,18 +172,18 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                     break
 
             if orig_face:
-                # 1. Mathematically extrude the face
+                # 1. Mathematically extrude the face.
+                # This returns the newly generated geometry elements.
                 res = bmesh.ops.extrude_face_region(bm, geom=[orig_face])
 
-                # Extract only the newly created vertices (the "cap" vertices)
+                # Filter out the newly created vertices (which make up the new cap)
                 new_verts = [elem for elem in res['geom'] if isinstance(elem, bmesh.types.BMVert)]
 
-                # 2. SCALAR FIX: Push the newly created top cap strictly by the scalar distance
-                # This ensures the adjacent unselected geometry is not dragged
+                # 2. SCALAR FIX: Push the newly created cap strictly by the scalar distance along the local normal.
                 for v in new_verts:
                     v.co += self.orig_normal * offset_val
 
-                # 3. Clean up: delete the original face so no internal geometry remains
+                # 3. Clean up the internal geometry left behind by the region extrusion
                 bmesh.ops.delete(bm, geom=[orig_face], context='FACES')
 
                 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
@@ -220,8 +220,11 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             if base_face:
                 for v in base_face.verts:
                     if offset_val > 0.0001:
-                        # UNION (Outward Pull): Push base face 2mm INTO the solid mesh
-                        v.co -= self.orig_normal * 0.002
+                        # UNION (Outward Pull): Push base face slightly into the solid mesh to guarantee overlap.
+                        # This overlap ensures that the exact boolean solver registers it as a true union
+                        # and doesn't leave non-manifold seams at flush boundaries, which allows dissolve_limited
+                        # to melt the lines.
+                        v.co -= self.orig_normal * 0.005 # 5mm overlap
                     else:
                         # DIFFERENCE (Inward Push): Pull base face 2cm OUT into empty space
                         v.co += self.orig_normal * 0.02
@@ -306,7 +309,7 @@ class VIEW3D_MT_modeling_floating_pie(bpy.types.Menu):
         pie.operator("mesh.normals_make_consistent", text="Fix Normals", icon='NORMALS_FACE').inside = False
 
 # ---------------------------------------------------------------------------
-# UI: Sidebar N-Panel ("Skenix" Tab)
+# UI: Sidebar N-Panel ("Modeling Tools" Tab)
 # ---------------------------------------------------------------------------
 
 class VIEW3D_PT_modeling_panel(bpy.types.Panel):
