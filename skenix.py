@@ -113,22 +113,14 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         bm_c = bmesh.from_edit_mesh(self.cutter_obj.data)
 
         # Calculate how far the native tool extruded the cutter geometry
-        max_dist = -1
-        end_face = None
-        for f in bm_c.faces:
-            dist = (f.calc_center_median() - self.orig_center).length
-            if dist > max_dist:
-                max_dist = dist
-                end_face = f
+        # We find the vertex with the maximum absolute offset along the normal.
+        max_offset = 0.0
+        for v in bm_c.verts:
+            proj = (v.co - self.orig_center).dot(self.orig_normal)
+            if abs(proj) > abs(max_offset):
+                max_offset = proj
 
-        if not end_face:
-            bpy.ops.object.mode_set(mode='OBJECT')
-            self.cancel_op()
-            return
-
-        # SCALAR MATH: Calculate the exact distance scalar along the face normal
-        offset_vector = end_face.calc_center_median() - self.orig_center
-        offset_val = offset_vector.dot(self.orig_normal)
+        offset_val = max_offset
 
         # Abort if the user didn't move the mouse
         if abs(offset_val) < 0.0001:
@@ -173,18 +165,19 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 
             if orig_face:
                 # 1. Mathematically extrude the face.
-                # This returns the newly generated geometry elements.
                 res = bmesh.ops.extrude_face_region(bm, geom=[orig_face])
 
-                # Filter out the newly created vertices (which make up the new cap)
-                new_verts = [elem for elem in res['geom'] if isinstance(elem, bmesh.types.BMVert)]
-
-                # 2. SCALAR FIX: Push the newly created cap strictly by the scalar distance along the local normal.
-                for v in new_verts:
+                # In BMesh, extrude_face_region preserves the original face as the cap of the extrusion,
+                # and creates new side faces connecting the original position to the cap.
+                # 2. SCALAR FIX: Translate the cap face (orig_face) by the exact scalar distance along the normal.
+                for v in orig_face.verts:
                     v.co += self.orig_normal * offset_val
 
                 # 3. Clean up the internal geometry left behind by the region extrusion
-                bmesh.ops.delete(bm, geom=[orig_face], context='FACES')
+                # Actually, extrude_face_region doesn't leave an internal face at the base when extruding a single face.
+                # Deleting orig_face would remove the cap, creating a hollow box.
+                # So we simply remove doubles and recalculate normals.
+
 
                 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
                 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
