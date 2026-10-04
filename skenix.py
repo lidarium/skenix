@@ -8,11 +8,11 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-    "name": "Modeling Tools",
+    "name": "Skenix",
     "author": "Lidarium",
     "version": (6, 7, 0),
     "blender": (2, 91, 0),
-    "location": "View3D > Sidebar (N) > Modeling Tools | Shortcut: Shift + Space",
+    "location": "View3D > Sidebar (N) > Skenix | Shortcut: Shift + Space",
     "description": "Smart Push/Pull (Scalar-Math Native Extrude + CSG Toggles)",
     "category": "Mesh",
 }
@@ -61,11 +61,11 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         bpy.ops.object.mode_set(mode='OBJECT')
 
         self.cutter_obj = [obj for obj in context.selected_objects if obj != self.main_obj][0]
-        
+
         bpy.ops.object.select_all(action='DESELECT')
         self.cutter_obj.select_set(True)
         context.view_layer.objects.active = self.cutter_obj
-        
+
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.select_all(action='SELECT')
 
@@ -77,9 +77,9 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 
         # Hand full control to the native extrude tool for perfect Blender snapping
         bpy.ops.mesh.extrude_region_move(
-            'INVOKE_DEFAULT', 
+            'INVOKE_DEFAULT',
             TRANSFORM_OT_translate={
-                'orient_type': 'PushPull', 
+                'orient_type': 'PushPull',
                 'constraint_axis': (False, False, True)
             }
         )
@@ -111,7 +111,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         context.view_layer.objects.active = self.cutter_obj
         bpy.ops.object.mode_set(mode='EDIT')
         bm_c = bmesh.from_edit_mesh(self.cutter_obj.data)
-        
+
         # Calculate how far the native tool extruded the cutter geometry
         max_dist = -1
         end_face = None
@@ -120,7 +120,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             if dist > max_dist:
                 max_dist = dist
                 end_face = f
-                
+
         if not end_face:
             bpy.ops.object.mode_set(mode='OBJECT')
             self.cancel_op()
@@ -157,33 +157,39 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         if run_native:
             bpy.ops.object.mode_set(mode='OBJECT')
             bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
-            
+
             context.view_layer.objects.active = self.main_obj
             bpy.ops.object.mode_set(mode='EDIT')
-            
+
             bm = bmesh.from_edit_mesh(self.main_obj.data)
             bm.faces.ensure_lookup_table()
-            
+
             # Find the exact original face on the main object
             orig_face = None
             for f in bm.faces:
                 if f.is_valid and (f.calc_center_median() - self.orig_center).length < 0.001:
                     orig_face = f
                     break
-                    
+
             if orig_face:
-                # 1. Mathematically extrude the face (This automatically creates side walls. NO interior face is left behind.)
-                bmesh.ops.extrude_face_region(bm, geom=[orig_face])
-                
-                # 2. SCALAR FIX: Push the top cap strictly by the scalar distance along the local normal.
-                # This makes matrix deformations and inversion completely impossible.
-                for v in orig_face.verts:
+                # 1. Mathematically extrude the face.
+                # This returns the newly generated geometry elements.
+                res = bmesh.ops.extrude_face_region(bm, geom=[orig_face])
+
+                # Filter out the newly created vertices (which make up the new cap)
+                new_verts = [elem for elem in res['geom'] if isinstance(elem, bmesh.types.BMVert)]
+
+                # 2. SCALAR FIX: Push the newly created cap strictly by the scalar distance along the local normal.
+                for v in new_verts:
                     v.co += self.orig_normal * offset_val
-                
+
+                # 3. Clean up the internal geometry left behind by the region extrusion
+                bmesh.ops.delete(bm, geom=[orig_face], context='FACES')
+
                 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
                 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
                 bmesh.update_edit_mesh(self.main_obj.data)
-                
+
                 # Super-Cleanup Topology Pass
                 bpy.ops.mesh.select_all(action='SELECT')
                 try:
@@ -201,7 +207,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             boundary_edges = [e for e in bm_c.edges if e.is_boundary]
             if boundary_edges:
                 bmesh.ops.hole_fill(bm_c, edges=boundary_edges)
-            
+
             # 2. OVERLAP TRICK: Break mathematical coplanarity by shifting the base
             min_dist = float('inf')
             base_face = None
@@ -210,49 +216,52 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                 if dist < min_dist:
                     min_dist = dist
                     base_face = f
-                    
+
             if base_face:
                 for v in base_face.verts:
                     if offset_val > 0.0001:
-                        # UNION (Outward Pull): Push base face 2mm INTO the solid mesh
-                        v.co -= self.orig_normal * 0.002
+                        # UNION (Outward Pull): Push base face slightly into the solid mesh to guarantee overlap.
+                        # This overlap ensures that the exact boolean solver registers it as a true union
+                        # and doesn't leave non-manifold seams at flush boundaries, which allows dissolve_limited
+                        # to melt the lines.
+                        v.co -= self.orig_normal * 0.005 # 5mm overlap
                     else:
                         # DIFFERENCE (Inward Push): Pull base face 2cm OUT into empty space
                         v.co += self.orig_normal * 0.02
-                        
+
             bmesh.ops.recalc_face_normals(bm_c, faces=bm_c.faces)
             bmesh.update_edit_mesh(self.cutter_obj.data)
             bpy.ops.object.mode_set(mode='OBJECT')
-            
+
             # 3. Apply EXACT CSG Boolean
             context.view_layer.objects.active = self.main_obj
             bool_mod = self.main_obj.modifiers.new("PPCut", 'BOOLEAN')
             bool_mod.object = self.cutter_obj
             bool_mod.solver = 'EXACT'
-            
+
             if offset_val > 0.0001:
                 bool_mod.operation = 'UNION'
             else:
                 bool_mod.operation = 'DIFFERENCE'
-            
+
             try:
                 bpy.ops.object.modifier_apply(modifier=bool_mod.name)
             except Exception:
                 pass
-                
+
             bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
-            
+
             # 4. Deep Clean Topology Pass
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.mesh.remove_doubles(threshold=0.001)
             bpy.ops.mesh.normals_make_consistent(inside=False)
-            
+
             # Destroy internal faces left by Boolean solver so edge seams can dissolve
             bpy.ops.mesh.select_all(action='DESELECT')
             bpy.ops.mesh.select_interior_faces()
             bpy.ops.mesh.delete(type='FACE')
-            
+
             # Melt all coplanar seams perfectly
             bpy.ops.mesh.select_all(action='SELECT')
             try:
@@ -266,10 +275,10 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         """Abort operation cleanly synchronously."""
         if bpy.context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
-            
+
         if self.cutter_obj and self.cutter_obj.name in bpy.data.objects:
             bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
-            
+
         bpy.context.view_layer.objects.active = self.main_obj
         bpy.ops.object.mode_set(mode='EDIT')
         return
@@ -279,7 +288,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 # ---------------------------------------------------------------------------
 
 class VIEW3D_MT_modeling_floating_pie(bpy.types.Menu):
-    bl_label = "Modeling Tools"
+    bl_label = "Skenix"
     bl_idname = "VIEW3D_MT_modeling_floating_pie"
 
     def draw(self, context):
@@ -292,11 +301,11 @@ class VIEW3D_MT_modeling_floating_pie(bpy.types.Menu):
         pie.operator("mesh.knife_tool", text="Line / Pencil (Knife)", icon='GREASEPENCIL')
         pie.operator("paint.ruler_add", text="Tape Measure", icon='ARROW_LEFTRIGHT')
         pie.operator("mesh.remove_doubles", text="Merge Doubles", icon='SNAP_VERTEX')
-        
+
         tool_settings = context.tool_settings
         icon_weld = 'CHECKBOX_HLT' if tool_settings.use_mesh_automerge else 'CHECKBOX_DEHLT'
         pie.prop(tool_settings, "use_mesh_automerge", text="Auto-Merge & Split", icon=icon_weld)
-        
+
         pie.operator("mesh.normals_make_consistent", text="Fix Normals", icon='NORMALS_FACE').inside = False
 
 # ---------------------------------------------------------------------------
@@ -304,11 +313,11 @@ class VIEW3D_MT_modeling_floating_pie(bpy.types.Menu):
 # ---------------------------------------------------------------------------
 
 class VIEW3D_PT_modeling_panel(bpy.types.Panel):
-    bl_label = "Modeling Tools"
+    bl_label = "Skenix"
     bl_idname = "VIEW3D_PT_modeling_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Modeling Tools"
+    bl_category = "Skenix"
 
     def draw(self, context):
         layout = self.layout
