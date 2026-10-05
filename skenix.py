@@ -164,23 +164,25 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                     break
 
             if orig_face:
-                # 1. Mathematically extrude the face.
-                res = bmesh.ops.extrude_face_region(bm, geom=[orig_face])
+                # 1. Mathematically extrude the face, deleting the original face automatically to avoid internal faces.
+                res = bmesh.ops.extrude_discrete_faces(bm, faces=[orig_face])
 
-                # In BMesh, extrude_face_region preserves the original face as the cap of the extrusion,
-                # and creates new side faces connecting the original position to the cap.
-                # 2. SCALAR FIX: Translate the cap face (orig_face) by the exact scalar distance along the normal.
-                for v in orig_face.verts:
-                    v.co += self.orig_normal * offset_val
+                # Retrieve the newly generated cap face from the result
+                new_faces = res.get('faces', [])
+                if new_faces:
+                    new_cap_face = new_faces[0]
 
-                # 3. Clean up the internal geometry left behind by the region extrusion
-                # Actually, extrude_face_region doesn't leave an internal face at the base when extruding a single face.
-                # Deleting orig_face would remove the cap, creating a hollow box.
-                # So we simply remove doubles and recalculate normals.
+                    # 2. SCALAR FIX: Translate the new cap face by the exact scalar distance along the normal.
+                    for v in new_cap_face.verts:
+                        v.co += self.orig_normal * offset_val
 
-
+                # 3. Clean up and melt coplanar seams
                 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
                 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+
+                # Apply bmesh dissolve to perfectly melt all flat seams left by the extrusion
+                bmesh.ops.dissolve_limit(bm, angle_limit=0.01745, verts=bm.verts, edges=bm.edges)
+
                 bmesh.update_edit_mesh(self.main_obj.data)
 
                 # Super-Cleanup Topology Pass
