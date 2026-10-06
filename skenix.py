@@ -248,6 +248,9 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 
             bmesh.update_edit_mesh(self.cutter_obj.data)
 
+            # Prevent dangling BMesh references from breaking Blender's Undo system
+            bm_c.free()
+
             # Select all geometry of cutter
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -280,6 +283,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                     f.hide = True
 
             bmesh.update_edit_mesh(self.main_obj.data)
+            bm_main.free()
             bpy.ops.object.mode_set(mode='OBJECT')
 
             # Join cutter into main
