@@ -128,25 +128,13 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             self.cancel_op()
             return
 
-        # Determine which engine to run based on UI switch
-        engine_mode = context.scene.push_pull_engine
-        run_native = False
-        run_csg = False
-
-        if engine_mode == 'AUTO':
-            if offset_val > 0.0001:
-                run_native = True
-            else:
-                run_csg = True
-        elif engine_mode == 'NATIVE':
-            run_native = True
-        elif engine_mode == 'CSG':
-            run_csg = True
+        # Determine which mode to run based purely on pull/push direction
+        is_outward = offset_val > 0.0001
 
         # ---------------------------------------------------------
-        # ENGINE A: PURE SCALAR BMESH EXTRUDE (Native)
+        # MODE A: OUTWARD PULL (Native + Dynamic Weld)
         # ---------------------------------------------------------
-        if run_native:
+        if is_outward:
             bpy.ops.object.mode_set(mode='OBJECT')
             bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
 
@@ -215,9 +203,9 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             return
 
         # ---------------------------------------------------------
-        # ENGINE B: PURE BMESH SWEEP (Inward Raycast & Cut)
+        # MODE B: INWARD PUSH (Pure BMesh Sweep Raycast & Cut)
         # ---------------------------------------------------------
-        if run_csg:
+        if not is_outward:
             import mathutils
             bpy.ops.object.mode_set(mode='OBJECT')
             bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
@@ -410,11 +398,6 @@ class VIEW3D_PT_modeling_panel(bpy.types.Panel):
         layout.use_property_decorate = False
 
         col = layout.column(align=True)
-        col.label(text="Push/Pull Engine:", icon='MOD_BOOLEAN')
-        col.prop(context.scene, "push_pull_engine", expand=True)
-
-        layout.separator()
-        col = layout.column(align=True)
         col.label(text="Primary Tools:", icon='TOOL_SETTINGS')
         col.operator("mesh.modeling_push_pull", text="Push / Pull Face", icon='EXPORT')
         col.operator("mesh.inset", text="Offset (Inset)", icon='MOD_OFFSET')
@@ -442,17 +425,6 @@ class VIEW3D_PT_modeling_panel(bpy.types.Panel):
 addon_keymaps = []
 
 def register():
-    bpy.types.Scene.push_pull_engine = bpy.props.EnumProperty(
-        name="Engine",
-        description="Select the mathematical engine used for Push/Pull",
-        items=[
-            ('AUTO', "Auto", "Smart Routing: Native for Outward, CSG for Inward"),
-            ('NATIVE', "Native", "Force Native Extrude Manifold"),
-            ('CSG', "CSG", "Force Exact Boolean Architecture")
-        ],
-        default='AUTO'
-    )
-
     bpy.utils.register_class(MESH_OT_modeling_push_pull)
     bpy.utils.register_class(VIEW3D_MT_modeling_floating_pie)
     bpy.utils.register_class(VIEW3D_PT_modeling_panel)
@@ -466,8 +438,6 @@ def register():
         addon_keymaps.append((km, kmi))
 
 def unregister():
-    del bpy.types.Scene.push_pull_engine
-
     for km, kmi in addon_keymaps:
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
