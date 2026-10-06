@@ -1,1 +1,3 @@
 blender-4.0.2-linux-x64/
+blender*
+__pycache__/
