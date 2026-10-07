@@ -225,77 +225,37 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                         v.co += self.orig_normal * 0.02
 
             bmesh.ops.recalc_face_normals(bm_c, faces=bm_c.faces)
-
-            # Calculate cutter AABB in main_obj's local space for chunking
-            inv_matrix = self.main_obj.matrix_world.inverted()
-            cutter_to_main_matrix = inv_matrix @ self.cutter_obj.matrix_world
-
-            c_min = Vector((float('inf'), float('inf'), float('inf')))
-            c_max = Vector((float('-inf'), float('-inf'), float('-inf')))
-
-            if bm_c.verts:
-                for v in bm_c.verts:
-                    loc_co = cutter_to_main_matrix @ v.co
-                    for i in range(3):
-                        c_min[i] = min(c_min[i], loc_co[i])
-                        c_max[i] = max(c_max[i], loc_co[i])
-
-            # Add a small buffer to the AABB
-            buffer = 0.5
-            for i in range(3):
-                c_min[i] -= buffer
-                c_max[i] += buffer
-
             bmesh.update_edit_mesh(self.cutter_obj.data)
 
             # Prevent dangling BMesh references from breaking Blender's Undo system
-            bm_c.free()
-
-            # Select all geometry of cutter
-            bpy.ops.mesh.select_all(action='SELECT')
+            bm_c = None
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # 3. Apply EXACT CSG Boolean (Direct Edit Mode + Chunking)
+            # 3. Apply EXACT CSG Boolean (Direct Edit Mode bypasses Modifier Stack)
             context.view_layer.objects.active = self.main_obj
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='DESELECT')
 
-            bm_main = bmesh.from_edit_mesh(self.main_obj.data)
+            num_faces_before_join = len(self.main_obj.data.polygons)
 
-            # Chunking: Hide distant geometry to drastically speed up Boolean solver
-            for f in bm_main.faces:
-                f_min = Vector((float('inf'), float('inf'), float('inf')))
-                f_max = Vector((float('-inf'), float('-inf'), float('-inf')))
-
-                for v in f.verts:
-                    for i in range(3):
-                        f_min[i] = min(f_min[i], v.co[i])
-                        f_max[i] = max(f_max[i], v.co[i])
-
-                # Check for AABB intersection
-                overlap = True
-                for i in range(3):
-                    if f_max[i] < c_min[i] or f_min[i] > c_max[i]:
-                        overlap = False
-                        break
-
-                if not overlap:
-                    f.hide = True
-
-            bmesh.update_edit_mesh(self.main_obj.data)
-            bm_main.free()
-            bpy.ops.object.mode_set(mode='OBJECT')
-
-            # Join cutter into main
             bpy.ops.object.select_all(action='DESELECT')
             self.cutter_obj.select_set(True)
             self.main_obj.select_set(True)
-            context.view_layer.objects.active = self.main_obj
             bpy.ops.object.join()
 
             bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='DESELECT')
 
-            # The cutter geometry remains selected from when we selected it in its own edit mode before join
+            # Re-select cutter geometry as Blender loses selection state on join
+            bm_main = bmesh.from_edit_mesh(self.main_obj.data)
+            bm_main.faces.ensure_lookup_table()
+
+            for i, f in enumerate(bm_main.faces):
+                if i >= num_faces_before_join:
+                    f.select = True
+
+            bm_main.select_flush(True)
+            bmesh.update_edit_mesh(self.main_obj.data)
+            bm_main = None
+
             op_type = 'UNION' if offset_val > 0.0001 else 'DIFFERENCE'
             try:
                 bpy.ops.mesh.intersect_boolean(operation=op_type, solver='EXACT')
@@ -319,10 +279,6 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             except Exception:
                 pass
             bpy.ops.mesh.select_all(action='DESELECT')
-
-            # Reveal chunked distant geometry
-            bpy.ops.mesh.reveal()
-
             return
 
     def cancel_op(self):
