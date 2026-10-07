@@ -124,6 +124,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 
         # Abort if the user didn't move the mouse
         if abs(offset_val) < 0.0001:
+            bm_c = None  # FIX: Sever reference before mode switch
             bpy.ops.object.mode_set(mode='OBJECT')
             self.cancel_op()
             return
@@ -147,8 +148,14 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         # ENGINE A: PURE SCALAR BMESH EXTRUDE (Native)
         # ---------------------------------------------------------
         if run_native:
+            bm_c = None  # FIX: Sever cutter reference
             bpy.ops.object.mode_set(mode='OBJECT')
-            bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
+
+            # FIX: Undo-safe object deletion
+            bpy.ops.object.select_all(action='DESELECT')
+            self.cutter_obj.select_set(True)
+            context.view_layer.objects.active = self.cutter_obj
+            bpy.ops.object.delete()
 
             context.view_layer.objects.active = self.main_obj
             bpy.ops.object.mode_set(mode='EDIT')
@@ -184,6 +191,8 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                 bmesh.ops.dissolve_limit(bm, angle_limit=0.01745, verts=bm.verts, edges=bm.edges)
 
                 bmesh.update_edit_mesh(self.main_obj.data)
+
+                bm = None  # FIX: Sever main reference before calling bpy.ops
 
                 # Super-Cleanup Topology Pass
                 bpy.ops.mesh.select_all(action='SELECT')
@@ -287,7 +296,11 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             bpy.ops.object.mode_set(mode='OBJECT')
 
         if self.cutter_obj and self.cutter_obj.name in bpy.data.objects:
-            bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
+            # FIX: Undo-safe object deletion
+            bpy.ops.object.select_all(action='DESELECT')
+            self.cutter_obj.select_set(True)
+            bpy.context.view_layer.objects.active = self.cutter_obj
+            bpy.ops.object.delete()
 
         bpy.context.view_layer.objects.active = self.main_obj
         bpy.ops.object.mode_set(mode='EDIT')
