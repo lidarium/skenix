@@ -10,10 +10,10 @@
 bl_info = {
     "name": "Skenix",
     "author": "Lidarium",
-    "version": (6, 7, 0),
-    "blender": (2, 91, 0),
+    "version": (6, 7, 1),
+    "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Skenix | Shortcut: Shift + Space",
-    "description": "Smart Push/Pull (Scalar-Math Native Extrude + CSG Toggles)",
+    "description": "Smart Push/Pull Prototype (Pure BMesh Engine)",
     "category": "Mesh",
 }
 
@@ -90,7 +90,9 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
     def modal(self, context, event):
         # Synchronous execution on mouse release
         if event.type in {'LEFTMOUSE', 'RET', 'NUMPAD_ENTER'} and event.value == 'RELEASE':
-            self.post_process()
+            # Use a timer to delay execution of post_process safely outside the current event loop execution,
+            # allowing native operator undo pushes to complete before changing object mode / deleting objects
+            bpy.app.timers.register(self.post_process, first_interval=0.01)
             return {'FINISHED'}
 
         if event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'RELEASE':
@@ -103,7 +105,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         """Engine Router: Executes Scalar BMesh Manifold or Exact Booleans based on User Toggle."""
         context = bpy.context
         if not self.cutter_obj or self.cutter_obj.name not in bpy.data.objects:
-            return
+            return None
 
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -126,7 +128,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         if abs(offset_val) < 0.0001:
             bpy.ops.object.mode_set(mode='OBJECT')
             self.cancel_op()
-            return
+            return None
 
         # Determine which mode to run based purely on pull/push direction
         is_outward = offset_val > 0.0001
@@ -223,7 +225,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                     break
 
             if not orig_face:
-                return
+                return None
 
             # Construct BVH tree to find what we hit
             bvh = mathutils.bvhtree.BVHTree.FromBMesh(bm)
@@ -244,35 +246,45 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                     hit_face = bm.faces[hit_index]
 
             if hit_wall and hit_face:
-                # We hit the back wall! Surgically cut the footprint.
+                # We hit the back wall! Surgically cut the footprint using bmesh intersect booleans.
 
-                # First, extrude the face mathematically but do NOT move it yet
+                # First, extrude the face mathematically and push it completely through the wall
                 res = bmesh.ops.extrude_discrete_faces(bm, faces=[orig_face])
                 new_faces = res.get('faces', [])
                 if not new_faces:
-                    return
+                    return None
                 new_cap = new_faces[0]
 
-                # Move the new cap exactly to the hit location (snapped to wall)
-                snap_dist = hit_dist + 0.001 # account for the offset we added to ray_origin
+                # Push past the hit location to create a clean intersection volume
+                overshoot = 1.0
+                push_vector = ray_dir * (hit_dist + overshoot)
                 for v in new_cap.verts:
-                    v.co += ray_dir * snap_dist
+                    v.co += push_vector
 
-                # We need to cut a hole in hit_face exactly matching new_cap
-                # To do this safely in BMesh, we can use bmesh.ops.bisect
-                # for each edge of new_cap, projected along the normal.
+                # Store the newly extruded geometry that forms the "cutter" shape
+                extruded_faces = set([new_cap])
+                extruded_faces.update([f for f in bm.faces if f.select and f != new_cap and f != orig_face])
 
-                # Keep track of geometry to cut (initially just the hit face)
+                # BMesh Boolean Difference
+                # Note: bmesh boolean operations act on the entire mesh, but we need to isolate the operation
+                # to the main mesh and the newly extruded tube.
+                # Since bmesh boolean isn't robust directly on the same edit mesh without splitting,
+                # we'll use BMesh bisect strictly on the hit_face but in a safer way,
+                # or rely on Blender's native boolean if BMesh boolean fails.
+                # However, for a pure BMesh sweep engine:
+
+                # We use bmesh.ops.bisect_plane on the hit face to cut the footprint cleanly.
+
                 geom_to_cut = [hit_face] + list(hit_face.edges) + list(hit_face.verts)
 
                 for edge in new_cap.edges:
-                    # The plane normal for bisection is the cross product of the edge direction and push direction
                     edge_dir = (edge.verts[1].co - edge.verts[0].co).normalized()
+                    # Plane pointing outwards from the footprint
                     plane_no = edge_dir.cross(ray_dir).normalized()
-                    plane_co = edge.verts[0].co
+                    plane_co = edge.verts[0].co - (ray_dir * overshoot) # shift plane back to the original wall
 
                     try:
-                        bisect_res = bmesh.ops.bisect(
+                        bisect_res = bmesh.ops.bisect_plane(
                             bm,
                             geom=geom_to_cut,
                             plane_co=plane_co,
@@ -280,23 +292,54 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                             clear_inner=False,
                             clear_outer=False
                         )
-                        # Add newly created geometry to our cut list for subsequent bisections
-                        geom_to_cut.extend(bisect_res.get('geom_inner', []))
-                        geom_to_cut.extend(bisect_res.get('geom_outer', []))
-                        geom_to_cut.extend(bisect_res.get('geom_cut', []))
-                        # filter out invalid/deleted geom
-                        geom_to_cut = list(set(g for g in geom_to_cut if g.is_valid))
+                        new_geom = bisect_res.get('geom_inner', []) + bisect_res.get('geom_outer', []) + bisect_res.get('geom_cut', [])
+                        valid_geom = [g for g in geom_to_cut if g.is_valid]
+                        geom_to_cut = list(set(valid_geom + new_geom))
                     except Exception:
                         pass
 
-                # After all bisections, we need to find the face(s) on the wall that correspond to the footprint
-                # and delete them, along with the new_cap itself, then bridge.
-                # A simpler approach for the prototype: delete the newly extruded cap AND the hit face,
-                # then let Blender's mesh cleanup handle it, or explicitly bridge.
+                # Snap the cap exactly to the wall now
+                for v in new_cap.verts:
+                    v.co -= (ray_dir * overshoot)
+                    v.co += (ray_dir * 0.001) # tiny inset to ensure cleanly inside
 
-                # Let's delete the cap and original hit face
+                # Find faces inside the footprint on the wall
+                faces_to_delete = []
+                bottom_faces = [g for g in geom_to_cut if isinstance(g, bmesh.types.BMFace) and g.is_valid]
+
+                for f in bottom_faces:
+                    is_inside = True
+                    center = f.calc_center_median()
+                    for edge in new_cap.edges:
+                        edge_dir = (edge.verts[1].co - edge.verts[0].co).normalized()
+                        plane_no = edge_dir.cross(ray_dir).normalized()
+                        plane_co = edge.verts[0].co
+                        dist = (center - plane_co).dot(plane_no)
+                        if dist > 0.001:
+                            is_inside = False
+                            break
+
+                    if is_inside:
+                        faces_to_delete.append(f)
+
+                # Get boundaries of the hole to bridge
+                hole_edges = set()
+                for f in faces_to_delete:
+                    for e in f.edges:
+                        linked_faces = e.link_faces
+                        if any(lf not in faces_to_delete for lf in linked_faces):
+                            hole_edges.add(e)
+
+                cap_edges = set(new_cap.edges)
+
                 try:
-                    bmesh.ops.delete(bm, geom=[new_cap, hit_face], context='FACES_ONLY')
+                    bmesh.ops.delete(bm, geom=faces_to_delete + [new_cap], context='FACES_ONLY')
+                except Exception:
+                    pass
+
+                edges_to_bridge = list(hole_edges) + list(cap_edges)
+                try:
+                    bmesh.ops.bridge_loops(bm, edges=edges_to_bridge)
                 except Exception:
                     pass
 
@@ -304,14 +347,6 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
                 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
                 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
                 bmesh.update_edit_mesh(self.main_obj.data)
-
-                # Select boundary loops and bridge
-                bpy.ops.mesh.select_all(action='DESELECT')
-                bpy.ops.mesh.select_non_manifold(extend=False, use_boundary=True)
-                try:
-                    bpy.ops.mesh.bridge_edge_loops()
-                except Exception:
-                    pass
 
                 # Clean up
                 bpy.ops.mesh.select_all(action='SELECT')
