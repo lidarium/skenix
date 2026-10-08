@@ -10,7 +10,7 @@
 bl_info = {
     "name": "Skenix",
     "author": "Lidarium",
-    "version": (6, 7, 0),
+    "version": (26, 281, 0),
     "blender": (2, 91, 0),
     "location": "View3D > Sidebar (N) > Skenix | Shortcut: Shift + Space",
     "description": "Smart Push/Pull (Scalar-Math Native Extrude + CSG Toggles)",
@@ -54,6 +54,9 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
         active_face = selected_faces[-1]
         self.orig_normal = active_face.normal.copy().normalized()
         self.orig_center = active_face.calc_center_median()
+
+        # FIX: Sever the initial BMesh reference before switching modes or duplicating!
+        bm = None
 
         # Duplicate the face to act as a visual guide and temporary boolean cutter
         bpy.ops.mesh.duplicate()
@@ -201,7 +204,7 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
             # 1. Cap the open back of the cutter to make it a perfectly manifold solid block
             boundary_edges = [e for e in bm_c.edges if e.is_boundary]
             if boundary_edges:
-                bmesh.ops.hole_fill(bm_c, edges=boundary_edges)
+                bmesh.ops.holes_fill(bm_c, edges=boundary_edges)
 
             # 2. OVERLAP TRICK: Break mathematical coplanarity by shifting the base
             min_dist = float('inf')
@@ -226,28 +229,58 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 
             bmesh.ops.recalc_face_normals(bm_c, faces=bm_c.faces)
             bmesh.update_edit_mesh(self.cutter_obj.data)
+
+            # Prevent dangling BMesh references from breaking Blender's Undo system
+            bm_c = None
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # 3. Apply EXACT CSG Boolean
+            # 3. Apply EXACT CSG Boolean (Direct Edit Mode bypasses Modifier Stack)
             context.view_layer.objects.active = self.main_obj
-            bool_mod = self.main_obj.modifiers.new("PPCut", 'BOOLEAN')
-            bool_mod.object = self.cutter_obj
-            bool_mod.solver = 'EXACT'
 
-            if offset_val > 0.0001:
-                bool_mod.operation = 'UNION'
-            else:
-                bool_mod.operation = 'DIFFERENCE'
+            num_faces_before_join = len(self.main_obj.data.polygons)
 
+            # --- UNDO CRASH FIX ---
+            # Native mode uses bpy.data.objects.remove to safely delete the object
+            # tracked by extrude_region_move without breaking the undo stack.
+            # CSG mode used join(), which pushed an operator undo step for the deletion,
+            # causing a massive SIGSEGV crash when Cmd+Z tried to restore it.
+            # Solution: Clone the cutter for the join, and safely remove the original.
+
+            temp_mesh = self.cutter_obj.data.copy()
+            temp_obj = bpy.data.objects.new("TempCutter", temp_mesh)
+            context.collection.objects.link(temp_obj)
+            temp_obj.matrix_world = self.cutter_obj.matrix_world
+
+            # Safely neutralize the original cutter_obj from the Undo stack
+            bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
+
+            bpy.ops.object.select_all(action='DESELECT')
+            temp_obj.select_set(True)
+            self.main_obj.select_set(True)
+            bpy.ops.object.join()
+
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='DESELECT')
+
+            # Re-select cutter geometry as Blender loses selection state on join
+            bm_main = bmesh.from_edit_mesh(self.main_obj.data)
+            bm_main.faces.ensure_lookup_table()
+
+            for i, f in enumerate(bm_main.faces):
+                if i >= num_faces_before_join:
+                    f.select = True
+
+            bm_main.select_flush(True)
+            bmesh.update_edit_mesh(self.main_obj.data)
+            bm_main = None
+
+            op_type = 'UNION' if offset_val > 0.0001 else 'DIFFERENCE'
             try:
-                bpy.ops.object.modifier_apply(modifier=bool_mod.name)
+                bpy.ops.mesh.intersect_boolean(operation=op_type, solver='EXACT')
             except Exception:
                 pass
 
-            bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
-
             # 4. Deep Clean Topology Pass
-            bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.mesh.remove_doubles(threshold=0.001)
             bpy.ops.mesh.normals_make_consistent(inside=False)
