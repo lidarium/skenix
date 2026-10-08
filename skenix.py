@@ -239,8 +239,23 @@ class MESH_OT_modeling_push_pull(bpy.types.Operator):
 
             num_faces_before_join = len(self.main_obj.data.polygons)
 
+            # --- UNDO CRASH FIX ---
+            # Native mode uses bpy.data.objects.remove to safely delete the object
+            # tracked by extrude_region_move without breaking the undo stack.
+            # CSG mode used join(), which pushed an operator undo step for the deletion,
+            # causing a massive SIGSEGV crash when Cmd+Z tried to restore it.
+            # Solution: Clone the cutter for the join, and safely remove the original.
+
+            temp_mesh = self.cutter_obj.data.copy()
+            temp_obj = bpy.data.objects.new("TempCutter", temp_mesh)
+            context.collection.objects.link(temp_obj)
+            temp_obj.matrix_world = self.cutter_obj.matrix_world
+
+            # Safely neutralize the original cutter_obj from the Undo stack
+            bpy.data.objects.remove(self.cutter_obj, do_unlink=True)
+
             bpy.ops.object.select_all(action='DESELECT')
-            self.cutter_obj.select_set(True)
+            temp_obj.select_set(True)
             self.main_obj.select_set(True)
             bpy.ops.object.join()
 
