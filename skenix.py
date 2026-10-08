@@ -10,7 +10,7 @@
 bl_info = {
     "name": "Skenix",
     "author": "Lidarium",
-    "version": (6, 7, 0),
+    "version": (26, 281, 0),
     "blender": (2, 91, 0),
     "location": "View3D > Sidebar (N) > Skenix | Shortcut: Shift + Space",
     "description": "Smart Push/Pull (Scalar-Math Native Extrude + CSG Toggles)",
